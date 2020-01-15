@@ -1,6 +1,4 @@
-{-# LANGUAGE DeriveGeneric              #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE OverloadedStrings          #-}
+{-# LANGUAGE OverloadedStrings #-}
 module Level07.Types
   ( Error (..)
   , ConfigError (..)
@@ -14,6 +12,7 @@ module Level07.Types
   , Comment (..)
   , Topic
   , CommentText
+  , partialConfDecoder
   , mkTopic
   , getTopic
   , mkCommentText
@@ -21,45 +20,50 @@ module Level07.Types
   , renderContentType
   , fromDBComment
   , confPortToWai
+  , encodeComment
+  , encodeTopic
   ) where
 
 import           System.IO.Error                    (IOError)
 
-import           GHC.Generics                       (Generic)
 import           GHC.Word                           (Word16)
 
 import           Data.ByteString                    (ByteString)
-import           Data.Text                          (Text)
+import           Data.Text                          (pack)
 
-import           Data.List                          (stripPrefix)
-import           Data.Maybe                         (fromMaybe)
-import           Data.Monoid                        (Last (Last))
-import           Data.Semigroup                     (Semigroup ((<>)))
-
-import           Data.Aeson                         (FromJSON (..), ToJSON,
-                                                     (.:?))
-import qualified Data.Aeson                         as A
-import qualified Data.Aeson.Types                   as A
+import           Data.Functor.Contravariant         ((>$<))
+import           Data.Semigroup                     (Last (Last), Semigroup ((<>)))
 
 import           Data.Time                          (UTCTime)
+import qualified Data.Time.Format                   as TF
+
+import           Waargonaut.Decode                  (CursorHistory, Decoder)
+import qualified Waargonaut.Decode                  as D
+import           Waargonaut.Decode.Error            (DecodeError)
+
+import           Waargonaut.Encode                  (Encoder)
+import qualified Waargonaut.Encode                  as E
 
 import           Database.SQLite.Simple             (Connection)
 import           Database.SQLite.SimpleErrors.Types (SQLiteResponse)
 
-import           Level07.DB.Types                  (DBComment (dbCommentComment, dbCommentId, dbCommentTime, dbCommentTopic))
-import           Level07.Types.Error               (Error ( UnknownRoute
-                                                           , EmptyCommentText
-                                                           , EmptyTopic
-                                                           , DBError
-                                                           ))
-import           Level07.Types.CommentText        ( CommentText
-                                                   , mkCommentText
-                                                   , getCommentText
-                                                   )
-import           Level07.Types.Topic              (Topic, mkTopic, getTopic)
+import           Level07.DB.Types                   (DBComment (dbCommentComment, dbCommentId, dbCommentTime, dbCommentTopic))
+
+import           Level07.Types.Error                (Error (DBError, EmptyCommentText, EmptyTopic, UnknownRoute))
+
+import           Level07.Types.CommentText          (CommentText,
+                                                     encodeCommentText,
+                                                     getCommentText,
+                                                     mkCommentText)
+
+import           Level07.Types.Topic                (Topic, encodeTopic,
+                                                     getTopic, mkTopic)
 
 newtype CommentId = CommentId Int
-  deriving (Show, ToJSON)
+  deriving (Show)
+
+encodeCommentId :: Applicative f => Encoder f CommentId
+encodeCommentId = (\(CommentId i) -> i) >$< E.int
 
 data Comment = Comment
   { commentId    :: CommentId
@@ -67,42 +71,20 @@ data Comment = Comment
   , commentText  :: CommentText
   , commentTime  :: UTCTime
   }
-  -- Generic has been added to our deriving list.
-  deriving ( Show, Generic )
+  deriving Show
 
--- Strip the prefix (which may fail if the prefix isn't present), fall
--- back to the original label if need be, then camel-case the name.
+encodeISO8601DateTime :: Applicative f => Encoder f UTCTime
+encodeISO8601DateTime = pack . TF.formatTime tl fmt >$< E.text
+  where
+    fmt = TF.iso8601DateFormat (Just "%H:%M:%S")
+    tl = TF.defaultTimeLocale { TF.knownTimeZones = [] }
 
--- | modFieldLabel
--- >>> modFieldLabel "commentId"
--- "id"
--- >>> modFieldLabel "topic"
--- "topic"
--- >>> modFieldLabel ""
--- ""
-modFieldLabel
-  :: String
-  -> String
-modFieldLabel l =
-  A.camelTo2 '_'
-  . fromMaybe l
-  $ stripPrefix "comment" l
-
-instance ToJSON Comment where
-  -- This is one place where we can take advantage of our Generic instance. Aeson
-  -- already has the encoding functions written for anything that implements the
-  -- Generic typeclass. So we don't have to write our encoding, we tell Aeson to
-  -- build it.
-  toEncoding = A.genericToEncoding opts
-    where
-      -- These options let us make some minor adjustments to how Aeson treats
-      -- our type. Our only adjustment is to alter the field names a little, to
-      -- remove the 'comment' prefix and use an Aeson function to handle the
-      -- rest of the name. This accepts any 'String -> String' function but it's
-      -- wise to keep the modifications simple.
-      opts = A.defaultOptions
-             { A.fieldLabelModifier = modFieldLabel
-             }
+encodeComment :: Applicative f => Encoder f Comment
+encodeComment = E.mapLikeObj $ \c ->
+  E.atKey' "id"    encodeCommentId       (commentId c) .
+  E.atKey' "topic" encodeTopic           (commentTopic c) .
+  E.atKey' "text"  encodeCommentText     (commentText c) .
+  E.atKey' "time"  encodeISO8601DateTime (commentTime c)
 
 -- For safety we take our stored DBComment and try to construct a Comment that
 -- we would be okay with showing someone. However unlikely it may be, this is a
@@ -172,73 +154,64 @@ confPortToWai =
 -- Similar to when we were considering our application types, leave this empty
 -- for now and add to it as you go.
 data ConfigError
-  = MissingPort
+  = BadConfFile (DecodeError, CursorHistory)
+  | MissingPort
   | MissingDBFilePath
   | JSONDecodeError String
   | ConfigFileReadError IOError
   deriving Show
 
--- Our application will be able to load configuration from both a file and
--- command line input. We want to be able to use the command line to temporarily
--- override the configuration from our file. How do we combine the different
--- inputs to enable this property?
+-- Our application will be able to load configuration from both a file and command line
+-- input. We want to be able to use the command line to temporarily override the
+-- configuration from our file. How do we combine the different inputs to enable this
+-- property?
 
--- We want the command line configuration to take precedence over the File
--- configuration, so if we think about combining each of our ``Conf`` records,
--- we want to be able to write something like this:
+-- We want the command line configuration to take precedence over the File configuration,
+-- so if we think about combining each of our ``Conf`` records, we want to be able to
+-- write something like this:
 
 -- ``defaults <> file <> commandLine``
 
--- We can use the ``Monoid`` typeclass to handle combining the ``Conf`` records
+-- We can use the ``Semigroup`` typeclass to handle combining the ``Conf`` records
 -- together, and the ``Last`` type to wrap up our values to handle the desired
 -- precedence. The ``Last`` type is a wrapper for Maybe that when used with its
--- ``Monoid`` instance will always preference the last ``Just`` value that it
--- has:
-
--- Last (Just 3) <> Last (Just 1) = Last (Just 1)
--- Last Nothing  <> Last (Just 1) = Last (Just 1)
--- Last (Just 1) <> Last Nothing  = Last (Just 1)
-
--- To make this easier, we'll make a new type ``PartialConf`` that will have our
--- ``Last`` wrapped values. We can then define a ``Monoid`` instance for it and
--- have our ``Conf`` be a known good configuration.
+-- ``Semigroup`` instance will always preference the last value that it has:
+--
+-- Just (Last 3) <> Just (Last 1) = Just (Last 1)
+-- Nothing       <> Just (Last 1) = Just (Last 1)
+-- Just (Last 1) <> Nothing       = Just (Last 1)
+--
+-- To make this easier, we'll make a new type ``PartialConf`` that will have our ``Last``
+-- wrapped values. We can then define a ``Semigroup`` instance for it and have our
+-- ``Conf`` be a known good configuration.
 data PartialConf = PartialConf
-  { pcPort       :: Last Port
-  , pcDBFilePath :: Last DBFilePath
+  { pcPort       :: Maybe (Last Port)
+  , pcDBFilePath :: Maybe (Last DBFilePath)
   }
 
--- Before we can define our ``Monoid`` instance for ``PartialConf``, we'll have
--- to define a Semigroup instance. We define our ``(<>)`` function to lean
--- on the ``Semigroup`` instance for Last to always get the last value.
+-- We need to define a ``Semigroup`` instance for ``PartialConf``. We define our ``(<>)``
+-- function to lean on the ``Semigroup`` instance for Last to always get the last value.
 instance Semigroup PartialConf where
   a <> b = PartialConf
     { pcPort       = pcPort a <> pcPort b
     , pcDBFilePath = pcDBFilePath a <> pcDBFilePath b
     }
 
--- We now define our ``Monoid`` instance for ``PartialConf``. Allowing us to
--- define our always empty configuration, which would always fail our
--- requirements. We just define `mappend` to be an alias of ``(<>)``
-instance Monoid PartialConf where
-  mempty = PartialConf mempty mempty
-  mappend = (<>)
-
 -- When it comes to reading the configuration options from the command-line, we
 -- use the 'optparse-applicative' package. This part of the exercise has already
 -- been completed for you, feel free to have a look through the 'CommandLine'
 -- module and see how it works.
 --
--- For reading the configuration from the file, we're going to use the aeson
+-- For reading the configuration from the file, we're going to use the Waargonaut
 -- library to handle the parsing and decoding for us. In order to do this, we
--- have to tell aeson how to go about converting the JSON into our PartialConf
+-- have to tell waargonaut how to go about converting the JSON into our PartialConf
 -- data structure.
-instance FromJSON PartialConf where
-  parseJSON = A.withObject "PartialConf" $ \o -> PartialConf
-    <$> parseToLast "port" Port o
-    <*> parseToLast "dbFilePath" DBFilePath o
-    where
-      parseToLast k c o =
-        Last . fmap c <$> o .:? k
+partialConfDecoder :: Monad f => Decoder f PartialConf
+partialConfDecoder = PartialConf
+  <$> lastAt "port" D.integral Port
+  <*> lastAt "dbFilePath" D.string DBFilePath
+  where
+    lastAt k d c = fmap (Last . c) <$> D.atKeyOptional k d
 
 -- We have a data type to simplify passing around the information we need to run
 -- our database queries. This also allows things to change over time without

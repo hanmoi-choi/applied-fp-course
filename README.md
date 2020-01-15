@@ -2,11 +2,11 @@
 
 [![Build Status](https://travis-ci.org/qfpl/applied-fp-course.svg?branch=master)](https://travis-ci.org/qfpl/applied-fp-course)
 
-<img src="https://i.imgur.com/0h9dFhl.png" height="200" width="320" />
+![CSIRO's Data61 Logo](https://raw.githubusercontent.com/qfpl/assets/master/data61-transparent-bg.png)
 
-This is a brand new course, so there are going to be rough edges. We invite
-you to submit issues or pull requests if you find errors or have suggestions
-on how to improve it.
+This is a new course, so there are going to be rough edges. We invite you to
+submit issues or pull requests if you find errors or have suggestions on how to
+improve it.
 
 This course is designed to be run in a class room with instructors, but we
 would like to make it suitable for self-study as well. Although undertaking
@@ -46,8 +46,7 @@ you may come find us on IRC on [Freenode](https://freenode.net/) in #qfpl or
 Each level is a self-contained Haskell module, containing incomplete, or as yet
 undefined, data types and functions.
 
-We recommend using either a cabal sandbox, or a ``nix-shell``, depending on your
-preference.
+We recommend using a ``nix-shell``, but it is not required.
 
 #### Cabal
 
@@ -123,8 +122,8 @@ instructions about what the goal is for that specific level.
 * Level 06 : Add some flexible configuration
 * Level 07 : ReaderT & refactoring
 
--- Coming Soon...
-* Level 08 : (Bonus Round) Lenses & Refactoring
+-- In Development...
+* Level 08 : Lenses & "classy mtl" monad transformers
 
 -- Maybe...
 * Level 09 : Add session controls (login, logout) and a protected route. So we

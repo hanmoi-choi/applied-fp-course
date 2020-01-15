@@ -7,9 +7,12 @@ import           Network.HTTP.Types         (Status, hContentType, status200,
 
 import qualified Data.ByteString.Lazy.Char8 as LBS
 
-import           Data.Aeson                 (ToJSON)
-import qualified Data.Aeson                 as A
-import           Level07.Types             (ContentType (JSON),
+import           Data.Text.Lazy.Encoding    (encodeUtf8)
+
+import           Waargonaut.Encode          (Encoder')
+import qualified Waargonaut.Encode          as E
+
+import           Level07.Types              (ContentType (JSON),
                                              renderContentType)
 
 mkResponse
@@ -50,8 +53,9 @@ resp500 =
   mkResponse status500
 
 resp200Json
-  :: ToJSON a
-  => a
+  :: Encoder' a
+  -> a
   -> Response
-resp200Json =
-  resp200 JSON . A.encode
+resp200Json e =
+  resp200 JSON . encodeUtf8 .
+  E.simplePureEncodeTextNoSpaces e

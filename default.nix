@@ -1,8 +1,10 @@
-{ nixpkgs ? import <nixpkgs> {}
+{ nixpkgs ? import ./nix/nixpkgs.nix
 , compiler ? "default"
 }:
 let
-  inherit (nixpkgs) pkgs;
+  pkgs = import nixpkgs {
+    overlays = (import ./course-overlays.nix);
+  };
 
   haskellPackages = if compiler == "default"
                       then pkgs.haskellPackages
@@ -11,4 +13,4 @@ let
   drv = haskellPackages.callPackage ./applied-fp-course.nix {};
 
 in
-  if pkgs.lib.inNixShell then drv.env else drv
+  drv

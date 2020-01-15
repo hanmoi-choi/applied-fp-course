@@ -1,21 +1,18 @@
 module Level07.Conf.File where
 
-import           Data.ByteString.Lazy       (ByteString)
-import qualified Data.ByteString.Lazy.Char8 as LBS
+import           Data.ByteString       (ByteString)
+import qualified Data.ByteString.Char8 as LBS
 
-import           Data.Text                  (Text)
+import           Data.Text             (pack)
 
-import           Data.Bifunctor             (first)
-import           Data.Monoid                (Last (Last))
+import           Data.Bifunctor        (first)
 
-import           Control.Exception          (try)
+import           Waargonaut.Attoparsec (pureDecodeAttoparsecByteString)
 
-import           Data.Aeson                 (FromJSON, Object, (.:))
+import           Control.Exception     (try)
 
-import qualified Data.Aeson                 as A
-import qualified Data.Aeson.Types           as A
-
-import           Level07.Types              (ConfigError (..), PartialConf)
+import           Level07.Types         (ConfigError (..), PartialConf,
+                                        partialConfDecoder)
 
 -- Doctest setup section
 -- $setup
@@ -35,10 +32,12 @@ readConfFile
 readConfFile fp =
   first ConfigFileReadError <$> try (LBS.readFile fp)
 
--- Construct the function that will take a ``FilePath``, read it in, decode it,
+-- | Construct the function that will take a ``FilePath``, read it in, decode it,
 -- and construct our ``PartialConf``.
 parseJSONConfigFile
   :: FilePath
   -> IO ( Either ConfigError PartialConf )
 parseJSONConfigFile fp =
-  (first JSONDecodeError . A.eitherDecode =<<) <$> readConfFile fp
+  (first BadConfFile . runDecode =<<) <$> readConfFile fp
+  where
+    runDecode = pureDecodeAttoparsecByteString partialConfDecoder

@@ -1,7 +1,11 @@
 {-# LANGUAGE FlexibleInstances     #-}
 {-# LANGUAGE InstanceSigs          #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
-module Level05.AppM where
+module Level05.AppM
+  ( AppM
+  , liftEither
+  , runAppM
+  ) where
 
 import           Control.Monad.Except   (MonadError (..))
 import           Control.Monad.IO.Class (MonadIO (..))
@@ -78,9 +82,6 @@ instance Applicative AppM where
   (<*>) = error "spaceship for AppM not implemented"
 
 instance Monad AppM where
-  return :: a -> AppM a
-  return = error "return for AppM not implemented"
-
   (>>=) :: AppM a -> (a -> AppM b) -> AppM b
   (>>=)  = error "bind for AppM not implemented"
 
@@ -106,6 +107,6 @@ liftEither
   :: Either Error a
   -> AppM a
 liftEither =
-  error "throwLeft not implemented"
+  error "liftEither not implemented"
 
 -- Go to 'src/Level05/DB.hs' next.
